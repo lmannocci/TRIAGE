@@ -103,6 +103,21 @@ class DirectoryManager:
         self.validator_rag_global_path = f"{self.validator_global_path}rag{os.sep}"
         self.__create_directory(self.validator_rag_global_path)
 
+        self.explanation_topk_sensitivity_path = f"{self.global_evaluator_path}explanation_topk_sensitivity{os.sep}"
+        self.__create_directory(self.explanation_topk_sensitivity_path)
+
+        self.explanation_topk_sensitivity_plot_path = f"{self.explanation_topk_sensitivity_path}plot{os.sep}"
+        self.__create_directory(self.explanation_topk_sensitivity_plot_path)
+
+        self.selector_path = f"{self.global_evaluator_path}selector{os.sep}"
+        self.__create_directory(self.selector_path)
+
+        self.selector_sensitivity_analysis_path = f"{self.selector_path}sensitivity_analysis{os.sep}"
+        self.__create_directory(self.selector_sensitivity_analysis_path)
+
+        self.selector_sensitivity_analysis_plot_path = f"{self.selector_sensitivity_analysis_path}plot{os.sep}"
+        self.__create_directory(self.selector_sensitivity_analysis_plot_path)
+
     def __blackbox_directories(self):
         self.model_path = f"{self.dataset_path}{self.model_name}_{self.model_prefix}{os.sep}"
         self.__create_directory(self.model_path)
@@ -202,8 +217,14 @@ class DirectoryManager:
         self.selector_path = f"{self.global_evaluator_path}selector{os.sep}"
         self.__create_directory(self.selector_path)
 
-        self.dataset_selector_path = f"{self.selector_path}{self.dataset_prefix}{os.sep}"
-        self.__create_directory(self.dataset_selector_path)
+        self.selector_sensitivity_analysis_path = f"{self.selector_path}sensitivity_analysis{os.sep}"
+        self.__create_directory(self.selector_sensitivity_analysis_path)
+
+        self.selector_sensitivity_analysis_plot_path = f"{self.selector_sensitivity_analysis_path}plot{os.sep}"
+        self.__create_directory(self.selector_sensitivity_analysis_plot_path)
+
+        # self.dataset_selector_path = f"{self.selector_path}{self.dataset_prefix}{os.sep}"
+        # self.__create_directory(self.dataset_selector_path)
 
     def __enhancer_validator_directories(self):
         if self.model_name is not None and self.model_prefix is not None and self.explainer_name is not None:

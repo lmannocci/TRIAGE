@@ -27,7 +27,18 @@ from utils.log_manager.log_manager import LogManager
 
 
 def _append_dataframe_row(row: Dict[str, Any], path: str) -> None:
-    pd.DataFrame([row]).to_csv(
+    df = pd.DataFrame([row])
+    if os.path.exists(path):
+        existing_columns = pd.read_csv(path, nrows=0).columns.tolist()
+        extra_columns = [column for column in df.columns if column not in existing_columns]
+        if extra_columns:
+            raise ValueError(
+                f"Cannot append row with new columns to {path}: {extra_columns}. "
+                "Initialize these columns with NaN in the task output schema."
+            )
+        df = df.reindex(columns=existing_columns)
+
+    df.to_csv(
         path,
         mode="a",
         header=not os.path.exists(path),
@@ -354,7 +365,14 @@ class BaseLLMInterface(ABC):
         files = [f for f in files if not f.endswith("_timing.csv")]
         files = sorted(files, key=_gpu_sort_key)
 
-        df = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
+        dfs = []
+        for file in files:
+            try:
+                dfs.append(pd.read_csv(file))
+            except pd.errors.ParserError as exc:
+                raise RuntimeError(f"Failed to read parallel output file {file}: {exc}") from exc
+
+        df = pd.concat(dfs, ignore_index=True)
         df.to_csv(f"{self.output_path}{self.enhancer_name}_df.csv", index=False)
 
     @log_method

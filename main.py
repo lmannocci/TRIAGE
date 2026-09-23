@@ -12,6 +12,9 @@ from synthesizer.synthesizer import Synthesizer
 from enhancer.confidence_enhancer import ConfidenceEnhancer
 from global_evaluator.global_evaluator import GlobalEvaluator
 from selector.selector import Selector
+from selector.sensitivity_analysis import SelectorSensitivityAnalysis
+from evaluator.explanation_topk_sensitivity import ExplanationTopKSensitivityAnalysis
+from evaluator.bootstrap_confidence_intervals import ClassificationBootstrapCI
 from utils.log_manager import LogManager
 
 from utils.checkpoint.checkpoint import *
@@ -54,7 +57,7 @@ if __name__ == '__main__':
 
     # PREPROCESSING
     # ----------------------------------------------------------------------------------------------------------
-    for dataset_prefix in ['pima', 'diabetes' , 'stroke', 'liver', 'covid']:    
+    for dataset_prefix in ['pima', 'diabetes' , 'stroke', 'liver', 'covid']:
         pr: Preprocessing = Preprocessing(ch, lm, dataset_prefix)
         df: pd.DataFrame = pr.preprocess_dataframe()
         pr.info_dataframe()
@@ -76,7 +79,9 @@ if __name__ == '__main__':
             ev: Evaluator = Evaluator(ch, lm, dataset_prefix, model_name=model_name, model_prefix=model_prefix)
             for save_global_evaluator in [False, True]:  # First save without global evaluator, then with global evaluator to include in cross-dataset comparison
                 ev.save_classification_report(save_global_evaluator=save_global_evaluator)  # Save to global evaluator as well for easier cross-dataset comparison
-    
+            bootstrap_ci = ClassificationBootstrapCI(ch, lm, dataset_prefix, n_bootstrap=2000, random_state=42)
+            bootstrap_ci.run_blackbox(model_name, model_prefix, save_global_evaluator=True)
+
     # EXPLAINER
     # ----------------------------------------------------------------------------------------------------------
     for dataset_prefix in ['pima', 'diabetes' , 'stroke', 'liver', 'covid']:
@@ -106,11 +111,11 @@ if __name__ == '__main__':
         en: Enhancer = Enhancer(ch, lm, dataset_prefix, enhancer_name, llm_name, rag, return_options=return_options, cuda_visible_devices=cuda_visible_devices, parallel=parallel)
         en.initialize_enhancer()
         en.run_enhancer()  # Run on the entire dataset
-        
+
         en: Enhancer = Enhancer(ch, lm, dataset_prefix, enhancer_name, llm_name=llm_name, rag=rag, return_options=return_options,  rag_K_documents=rag_K_documents)
         en.initialize_enhancer(intialize_model=False)
         en.clean_enhancer_df()
-    
+
     # ENHANCER+EVALUATOR: CLEAN ENHANCER RANKING AND SAVE CLASSIFICATION REPORT
     # ----------------------------------------------------------------------------------------------------------
     for dataset_prefix in ['pima', 'diabetes' , 'stroke', 'liver', 'covid']:
@@ -127,7 +132,17 @@ if __name__ == '__main__':
                     ev: Evaluator = Evaluator(ch, lm, dataset_prefix, enhancer_name=enhancer_name, llm_name=llm_name, rag=rag)
                     for save_global_evaluator in [False, True]:  # First save without global evaluator, then with global evaluator to include in cross-dataset comparison
                         ev.save_classification_report(save_global_evaluator=save_global_evaluator)  # Save to global evaluator as well for easier cross-dataset comparison
-    
+
+                    bootstrap_ci = ClassificationBootstrapCI(ch, lm, dataset_prefix, n_bootstrap=2000, random_state=42)
+                    bootstrap_ci.run_enhancer(
+                        enhancer_name=enhancer_name,
+                        llm_name=llm_name,
+                        rag=rag,
+                        retriever_name="MedCPT",
+                        corpus_name="StatPearls",
+                        save_global_evaluator=True,
+                    )
+
 
     # EVALUATOR - Breakdown agreement
     # ----------------------------------------------------------------------------------------------------------
@@ -152,16 +167,16 @@ if __name__ == '__main__':
         model_prefix = config_module.model_prefix
         top_k = config_module.top_k
         metric_exp_ranking = config_module.metric_exp_ranking
-        
+
         for model_name, explainer_list in av_models_explainer.items():
             for explainer_name in explainer_list: # ['shap', 'lime', 'dalex']:
                 for enhancer_name, llm_list in av_enhancers_llm.items(): # ['medrag', 'huggingface'], [['mixtral', 'llama2', 'meditron'], ['mixtral', 'llama2']]
                     for llm_name in llm_list: # ['mixtral', 'llama2', 'meditron']:
                         for rag in av_enhancers_rag[enhancer_name]: # [True, False]:
                             lm.printl(f"{dataset_prefix}:{model_name} with explainer {explainer_name} and enhancer {enhancer_name} with llm {llm_name} and RAG {rag}")
-                            ev: Evaluator = Evaluator(ch, lm, dataset_prefix, 
-                                                      model_name=model_name, model_prefix=model_prefix, 
-                                                      explainer_name=explainer_name, 
+                            ev: Evaluator = Evaluator(ch, lm, dataset_prefix,
+                                                      model_name=model_name, model_prefix=model_prefix,
+                                                      explainer_name=explainer_name,
                                                       enhancer_name=enhancer_name, llm_name=llm_name, rag=rag, top_k=top_k, metric_exp_ranking=metric_exp_ranking)
                             ev.evaluate_explanations()
                             ev.save_aggregated_explanation_evaluation(save_global_evaluator=True)  # Save to global evaluator as well for easier cross-dataset comparison
@@ -173,14 +188,14 @@ if __name__ == '__main__':
         model_prefix = config_module.model_prefix
         top_k = config_module.top_k
         metric_exp_ranking = config_module.metric_exp_ranking
-        
+
         for model_name, explainer_list in av_models_explainer.items():
             for explainer_name in explainer_list: # ['shap', 'lime', 'dalex']:
                 lm.printl(f"{dataset_prefix}:{model_name} with explainer {explainer_name}")
                 ev: Evaluator = Evaluator(ch, lm, dataset_prefix, model_name=model_name, model_prefix=model_prefix, explainer_name=explainer_name)
                 ev.save_aggregate_explanation_metrics(metrics_list=['faithfulness'])
-    
-    
+
+
     for dataset_prefix in ['pima', 'diabetes' , 'stroke', 'liver', 'covid']:
         config_module = importlib.import_module(dataset_to_config[dataset_prefix])
         avg_text_y_shift_map = config_module.avg_text_y_shift_map
@@ -190,7 +205,7 @@ if __name__ == '__main__':
 
     # SYNTHESIZER
     # ----------------------------------------------------------------------------------------------------------
-    for dataset_prefix in ['pima', 'diabetes' , 'stroke', 'liver', 'covid']: # 
+    for dataset_prefix in ['pima', 'diabetes' , 'stroke', 'liver', 'covid']: #
         config_module = importlib.import_module(dataset_to_config[dataset_prefix])
         synthesizer_name = config_module.synthesizer_name
         epochs = config_module.epochs
@@ -225,8 +240,8 @@ if __name__ == '__main__':
 
 
         lm.printl(f"{dataset_prefix}:{enhancer_name} with llm {llm_name} and RAG {rag}")
-        ce: ConfidenceEnhancer = ConfidenceEnhancer(ch, lm, dataset_prefix, 
-                                                    enhancer_name,  llm_name, rag, 
+        ce: ConfidenceEnhancer = ConfidenceEnhancer(ch, lm, dataset_prefix,
+                                                    enhancer_name,  llm_name, rag,
                                                     retriever_name=retriever_name, corpus_name=corpus_name,
                                                     return_options=return_options, rag_K_documents=rag_K_documents,
                                                     synthesizer_name=synthesizer_name, epochs=epochs, n_samples_synthesizer=n_samples_synthesizer,
@@ -236,11 +251,11 @@ if __name__ == '__main__':
         ce.analyze_neighbors_distribution()
         ce.run_enhancer_on_neighbors()
         ce.compute_confidence_scores()
-        ce.plot_confidence_enhancer_results()
+        ce.plot_confidence_distribution()
 
-    # SELECTOR
-    # ----------------------------------------------------------------------------------------------------------
-    final_config_module = importlib.import_module("input_config_final") 
+    # # SELECTOR
+    # # ----------------------------------------------------------------------------------------------------------
+    final_config_module = importlib.import_module("input_config_final")
     selector_name = final_config_module.selector_name
     model_name = final_config_module.model_name
     model_prefix = final_config_module.model_prefix
@@ -274,9 +289,109 @@ if __name__ == '__main__':
                             )
         se.apply_selector()
         se.analyze_selector()
+        se.plot_selector_case_scatter()
         se.save_selector_classification_report()
-        se.plot_selector_vs_bb_dumbbell_per_dataset()
-    
+        se.plot_selector_vs_bb_accepted_subset_dumbbell_per_dataset()
+        se.plot_selector_vs_bb_matched_coverage_dumbbell_per_dataset()
+
+        bootstrap_ci = ClassificationBootstrapCI(ch, lm, dataset_prefix, n_bootstrap=2000, random_state=42)
+        bootstrap_ci.run_selector(
+            selector_name=selector_name,
+            model_name=model_name,
+            model_prefix=model_prefix,
+            explainer_name=explainer_name,
+            top_k=top_k,
+            metric_exp_ranking=metric_exp_ranking,
+            enhancer_name=enhancer_name,
+            llm_name=llm_name,
+            rag=rag,
+            retriever_name=retriever_name,
+            corpus_name=corpus_name,
+            return_options=return_options,
+            rag_K_documents=rag_K_documents,
+            synthesizer_name=synthesizer_name,
+            epochs=epochs,
+            n_samples_synthesizer=n_samples_synthesizer,
+            n_neighbors=n_neighbors,
+            metric_neighbors=metric_neighbors,
+            aggregation_method=aggregation_method,
+            th_model_conf=0.7,
+            th_enhancer_conf=0.7,
+            th_rbo=0.7,
+            save_global_evaluator=True,
+        )
+        bootstrap_ci.run_selector_blackbox_baselines(
+            selector_name=selector_name,
+            model_name=model_name,
+            model_prefix=model_prefix,
+            explainer_name=explainer_name,
+            top_k=top_k,
+            metric_exp_ranking=metric_exp_ranking,
+            enhancer_name=enhancer_name,
+            llm_name=llm_name,
+            rag=rag,
+            retriever_name=retriever_name,
+            corpus_name=corpus_name,
+            return_options=return_options,
+            rag_K_documents=rag_K_documents,
+            synthesizer_name=synthesizer_name,
+            epochs=epochs,
+            n_samples_synthesizer=n_samples_synthesizer,
+            n_neighbors=n_neighbors,
+            metric_neighbors=metric_neighbors,
+            aggregation_method=aggregation_method,
+            th_model_conf=0.7,
+            th_enhancer_conf=0.7,
+            th_rbo=0.7,
+            save_global_evaluator=True,
+        )``
+
+
+        Selector threshold sensitivity analysis.
+        Writes CSV reports under results/global_evaluator/selector/sensitivity_analysis/.
+        sensitivity = SelectorSensitivityAnalysis(
+            ch, lm, dataset_prefix, selector_name,
+            model_name, model_prefix,
+            explainer_name, top_k, metric_exp_ranking,
+            enhancer_name, llm_name, rag, retriever_name, corpus_name, return_options, rag_K_documents,
+            synthesizer_name, epochs, n_samples_synthesizer, n_neighbors, metric_neighbors, aggregation_method,
+            baseline_threshold=0.7,
+            threshold_values=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
+            cuda_visible_devices=cuda_visible_devices, parallel=parallel,
+        )
+        sensitivity.run()
+        sensitivity.run_ablation_study()
+        sensitivity.plot()
+
+    ge: GlobalEvaluator = GlobalEvaluator(ch, lm)
+    ge.merge_ablation_results()
+
+    # EXPLANATION TOP-K SENSITIVITY
+    # ----------------------------------------------------------------------------------------------------------
+    final_config_module = importlib.import_module("input_config_final")
+    top_k_values = "dataset_max"
+    for dataset_prefix in ['pima', 'diabetes', 'stroke', 'liver', 'covid']:
+        topk_sensitivity = ExplanationTopKSensitivityAnalysis(
+            ch=ch,
+            lm=lm,
+            dataset_prefix=dataset_prefix,
+            model_name=final_config_module.model_name,
+            model_prefix=final_config_module.model_prefix,
+            explainer_name=final_config_module.explainer_name,
+            enhancer_name=final_config_module.enhancer_name,
+            llm_name=final_config_module.llm_name,
+            rag=final_config_module.rag,
+            retriever_name=final_config_module.retriever_name,
+            corpus_name=final_config_module.corpus_name,
+            top_k_values=top_k_values,
+            metric_exp_ranking=final_config_module.metric_exp_ranking,
+        )
+        topk_sensitivity.run()
+        topk_sensitivity.compute_random_rbo_baseline(n_simulations=10000, random_state=42)
+    topk_sensitivity.plot()
+    topk_sensitivity.plot(max_top_k=21)
+
+    # ----------------------------------------------------------------------------------------------------------
     # Explanation TOP-K agreement analysis for selector vs enhancer vs blackbox
     for dataset_prefix in ['pima' , 'diabetes', 'stroke', 'liver', 'covid']: #,'pima' , 'diabetes', 'stroke', 'liver', 'covid'
         lm.printl(f"Dataset {dataset_prefix} - saving aggregated explanation feature statistics for final configuration")
@@ -298,7 +413,7 @@ if __name__ == '__main__':
 
     # LLM AS A JUDGE
     # ----------------------------------------------------------------------------------------------------------
-    final_config_module = importlib.import_module("input_config_final") 
+    final_config_module = importlib.import_module("input_config_final")
     model_name = final_config_module.model_name
     model_prefix = final_config_module.model_prefix
     explainer_name = final_config_module.explainer_name
@@ -313,8 +428,9 @@ if __name__ == '__main__':
     judge_rag = False
     judge_retriever_name = "MedCPT"
     judge_corpus_name = "StatPearls"
+    rerun_llm_judge = True
 
-    for dataset_prefix in ['diabetes', 'stroke', 'liver', 'covid']: #,'pima' , 'diabetes', 'stroke', 'liver', 'covid'
+    for dataset_prefix in ['pima' , 'diabetes', 'stroke', 'liver', 'covid']: #,'pima' , 'diabetes', 'stroke', 'liver', 'covid'
         validator = EnhancerJudgeValidator(
             ch=ch,
             lm=lm,
@@ -336,6 +452,7 @@ if __name__ == '__main__':
             top_k=top_k,
             cuda_visible_devices=cuda_visible_devices,
             parallel=parallel,
+            rerun_existing=rerun_llm_judge,
         )
         validator.run()
         validator.clean_llm_judge()

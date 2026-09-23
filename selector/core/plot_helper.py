@@ -2,6 +2,7 @@
 
 
 from matplotlib.patches import Patch
+import matplotlib.colors as mcolors
 
 from utils.checkpoint.checkpoint import Checkpoint
 from utils.directory_manager.directory_manager import DirectoryManager
@@ -162,7 +163,8 @@ class SelectorPlotHelper:
             - agree
             - disagree_model
             - disagree_enhancer
-            - abstain
+            - abstain branches are omitted from the scatter legend because
+              they have no non-abstained predictions from which F1 is computed.
 
         marker:
             confidence case:
@@ -282,6 +284,9 @@ class SelectorPlotHelper:
         axis_label_fontsize = 18
         tick_fontsize = 14
 
+        plotted_output_types = set()
+        plotted_confidence_cases = set()
+
         for ax, (metric_col, title) in zip(axes, subplot_info):
             sub_df = plot_df.dropna(subset=["percentage", metric_col]).copy()
 
@@ -294,16 +299,19 @@ class SelectorPlotHelper:
                     if tmp.empty:
                         continue
 
+                    point_color = color_map.get(output_type, output_color_dict["unknown"])
                     ax.scatter(
                         tmp["percentage"],
                         tmp[metric_col],
-                        c=color_map.get(output_type, output_color_dict["unknown"]),
+                        c=[point_color],
                         marker=marker_map.get(confidence_case, "X"),
                         s=300,
                         # alpha=0.9,
-                        edgecolors="none",
-                        linewidths=0.5,
+                        edgecolors=[self._darken_color(point_color)],
+                        linewidths=1.5,
                     )
+                    plotted_output_types.add(output_type)
+                    plotted_confidence_cases.add(confidence_case)
 
             ax.set_title(title, fontsize=title_fontsize)
             ax.set_xlabel("percentage of rows in case", fontsize=axis_label_fontsize)
@@ -331,8 +339,8 @@ class SelectorPlotHelper:
                 lw=6,
                 label=output_label_map.get(label, label),
             )
-            for label in ["agree", "disagree_model", "disagree_enhancer", "abstain"]
-            if label in plot_df["output_type"].values
+            for label in ["agree", "disagree_model", "disagree_enhancer"]
+            if label in plotted_output_types
         ]
 
         confidence_handles = [
@@ -345,7 +353,7 @@ class SelectorPlotHelper:
                 label=confidence_label_map.get(label, label),
             )
             for label, marker in marker_map.items()
-            if label in plot_df["confidence_case"].values
+            if label in plotted_confidence_cases
         ]
 
         legend_fig = plt.figure(figsize=(8, 1.4), dpi=dpi)
@@ -380,6 +388,11 @@ class SelectorPlotHelper:
         plt.tight_layout()
         plt.savefig(out_legend_path, dpi=dpi, bbox_inches="tight", pad_inches=0)
         plt.close(legend_fig)
+
+    @staticmethod
+    def _darken_color(color, factor: float = 0.65):
+        rgb = np.array(mcolors.to_rgb(color))
+        return tuple(np.clip(rgb * factor, 0, 1))
 
     # def plot_explanation_usage(self, df: pd.DataFrame, out_path: str):
     #     """

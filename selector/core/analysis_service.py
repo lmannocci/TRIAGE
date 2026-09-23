@@ -247,29 +247,69 @@ class SelectorAnalysisService:
                 f"{self.dm.en_selector_plot_path}{suffix}_by_decision.png",
             )
 
-        optional_cols = [
-            self.ctx.model_conf_col,
-            self.ctx.enhancer_conf_col,
-            self.ctx.metric_complete_name,
-        ]
+        # optional_cols = [
+        #     self.ctx.model_conf_col,
+        #     self.ctx.enhancer_conf_col,
+        #     self.ctx.metric_complete_name,
+        # ]
         # self.plotter.save_histograms(df, optional_cols, self.dm.en_selector_plot_path)
         # self.plotter.save_kde_plots(df, optional_cols, self.dm.en_selector_plot_path)
         # self.plotter.save_distribution_plots(df, optional_cols, self.dm.en_selector_plot_path)
 
+    def plot_selector_case_scatter(self):
         self.plotter.plot_selector_case_scatter()
 
     def save_selector_classification_report(self):
+        """
+        Save selector classification reports under the global selector folder.
+
+        Three complementary comparisons are produced:
+
+        1. `selector_classification_reports.csv`
+           Compares selector metrics on its non-abstained predictions against
+           blackbox metrics computed on the full test set. This answers whether
+           the selective system improves over the original blackbox evaluated
+           on all available test rows.
+
+        2. `selector_classification_reports_on_accepted_subset.csv`
+           Compares selector metrics against blackbox metrics computed on the
+           exact same rows accepted by the selector. Here, the subset is chosen
+           by the selector decision logic, so `pct_change_*` measures the
+           selector improvement over the blackbox on the selector-accepted
+           subset.
+
+        3. `selector_classification_reports_matched_coverage_bb.csv`
+           Compares selector metrics against a selective blackbox baseline with
+           the same coverage as the selector. The blackbox subset is obtained
+           by ranking selector-eligible test rows by blackbox confidence from
+           highest to lowest and selecting exactly `n_non_abstain` rows. Ties
+           at the confidence cutoff are resolved deterministically by smaller
+           `original_index`, then original row order. This answers whether the
+           selector improves over a confidence-based blackbox abstention policy
+           at matched coverage.
+        """
+        # Load the selector output and the original blackbox predictions. The
+        # selector dataframe contains abstention decisions; the blackbox file
+        # contains predictions and confidence scores for the test set.
         df_selector = self.ch.read_dataframe(self._selector_df_path(), dtype=dtype)
         df_bb = self.ch.read_dataframe(f"{self.dm.model_path}{self.ctx.model_name}_predicted.csv", dtype=dtype)
 
+        # Resolve column names from the selector context so this method remains
+        # valid for different datasets/models/selectors.
         target = self.ctx.target_col
         selector_pred_col = self.ctx.selector_prediction_col
         selector_is_abstain_col = self.ctx.selector_is_abstain_col
         bb_pred_col = self.ctx.model_pred_col
 
+        # Output files correspond to the three baselines described in the
+        # docstring: full blackbox, blackbox on selector-accepted rows, and
+        # confidence-based blackbox at matched coverage.
         path_full = f"{self.dm.selector_path}selector_classification_reports.csv"
         path_accepted = f"{self.dm.selector_path}selector_classification_reports_on_accepted_subset.csv"
+        path_matched_coverage = f"{self.dm.selector_path}selector_classification_reports_matched_coverage_bb.csv"
 
+        # Selector performance is defined only on rows where the selector does
+        # not abstain. Coverage and abstention rates are computed on all rows.
         accepted_df = df_selector.loc[~df_selector[selector_is_abstain_col]].copy()
         n_total = len(df_selector)
         n_abstain = int(df_selector[selector_is_abstain_col].sum())
@@ -278,12 +318,15 @@ class SelectorAnalysisService:
         coverage = n_non_abstain / n_total if n_total > 0 else np.nan
         abstain_rate = n_abstain / n_total if n_total > 0 else np.nan
 
+        # Class-specific abstention rates need denominators for each true
+        # class, so build class masks before creating the report rows.
         selector_target_num = pd.to_numeric(df_selector[target], errors="coerce")
         mask_0 = selector_target_num == 0
         mask_1 = selector_target_num == 1
         n_true_0 = int(mask_0.sum())
         n_true_1 = int(mask_1.sum())
 
+        # Compute selector classification metrics on accepted rows only.
         y_true_selector = pd.to_numeric(accepted_df[target], errors="coerce")
         y_pred_selector = pd.to_numeric(accepted_df[selector_pred_col], errors="coerce")
         valid_mask_selector = y_true_selector.notna() & y_pred_selector.notna()
@@ -292,6 +335,7 @@ class SelectorAnalysisService:
             y_pred_selector.loc[valid_mask_selector],
         )
 
+        # Baseline 1: blackbox evaluated on the full test set.
         y_true_bb = pd.to_numeric(df_bb[target], errors="coerce")
         y_pred_bb = pd.to_numeric(df_bb[bb_pred_col], errors="coerce")
         valid_mask_bb = y_true_bb.notna() & y_pred_bb.notna()
@@ -300,6 +344,9 @@ class SelectorAnalysisService:
             y_pred_bb.loc[valid_mask_bb],
         )
 
+        # Baseline 2: blackbox evaluated on the exact same rows accepted by
+        # the selector. This isolates whether the selector's chosen predictions
+        # improve over blackbox predictions on the same cases.
         accepted_indices = accepted_df[ind].tolist()
         df_bb_accepted = df_bb[df_bb[ind].isin(accepted_indices)].copy()
         y_true_bb_accepted = pd.to_numeric(df_bb_accepted[target], errors="coerce")
@@ -310,6 +357,38 @@ class SelectorAnalysisService:
             y_pred_bb_accepted.loc[valid_mask_bb_accepted],
         )
 
+        # Baseline 3: blackbox evaluated on its highest-confidence rows, with
+        # the number of rows matched to the selector coverage. This compares
+        # the selector with a simple confidence-based abstention policy.
+        df_bb_matched_coverage = self._matched_coverage_blackbox_subset(
+            df_selector=df_selector,
+            df_bb=df_bb,
+            n_non_abstain=n_non_abstain,
+        )
+        y_true_bb_matched = pd.to_numeric(df_bb_matched_coverage[target], errors="coerce")
+        y_pred_bb_matched = pd.to_numeric(df_bb_matched_coverage[bb_pred_col], errors="coerce")
+        valid_mask_bb_matched = y_true_bb_matched.notna() & y_pred_bb_matched.notna()
+        bb_metrics_matched_coverage = self.metrics.build_report_metrics(
+            y_true_bb_matched.loc[valid_mask_bb_matched],
+            y_pred_bb_matched.loc[valid_mask_bb_matched],
+        )
+        matched_coverage = len(df_bb_matched_coverage) / n_total if n_total > 0 else np.nan
+
+        # Sanity checks: matched-coverage baseline must select exactly the same
+        # number of rows, hence the same coverage, as the selector.
+        if n_non_abstain != len(df_bb_matched_coverage):
+            raise ValueError(
+                f"Matched-coverage blackbox subset has {len(df_bb_matched_coverage)} rows, "
+                f"expected {n_non_abstain}."
+            )
+        if not pd.isna(coverage) and not np.isclose(matched_coverage, coverage):
+            raise ValueError(
+                f"Matched-coverage blackbox coverage {matched_coverage} differs from selector coverage {coverage}."
+            )
+
+        # Metrics used for percentage-change columns. Support columns are
+        # intentionally excluded because percentage changes on supports are not
+        # performance measures.
         metrics_for_comparison = [
             "accuracy", "precision_macro", "recall_macro", "f1-score_macro",
             "precision_weighted", "recall_weighted", "f1-score_weighted",
@@ -318,6 +397,8 @@ class SelectorAnalysisService:
         ]
 
         def save_row(path: str, bb_metrics: dict):
+            # Shared metadata and selector abstention statistics are identical
+            # across the three reports; only the blackbox baseline changes.
             base_row = {
                 "dataset_prefix": self.ctx.dataset_prefix,
                 "model_name": self.ctx.model_name,
@@ -337,14 +418,24 @@ class SelectorAnalysisService:
                 "abstain_rate": abstain_rate,
                 "abstain_rate_0": float((df_selector[selector_is_abstain_col] & mask_0).sum() / n_true_0) if n_true_0 > 0 else np.nan,
                 "abstain_rate_1": float((df_selector[selector_is_abstain_col] & mask_1).sum() / n_true_1) if n_true_1 > 0 else np.nan,
+                "matched_coverage_bb_n_rows": len(df_bb_matched_coverage) if path == path_matched_coverage else np.nan,
+                "matched_coverage_bb_coverage": matched_coverage if path == path_matched_coverage else np.nan,
             }
+
+            # Prefix metric names to keep selector and blackbox values side by
+            # side in the same row.
             base_row.update({f"selector_{k}": v for k, v in selector_metrics.items()})
             base_row.update({f"bb_{k}": v for k, v in bb_metrics.items()})
+
+            # Positive pct_change means the selector metric is higher than the
+            # selected blackbox baseline for that report.
             base_row.update({
                 f"pct_change_{metric}": self.metrics.pct_change(selector_metrics.get(metric), bb_metrics.get(metric))
                 for metric in metrics_for_comparison
             })
 
+            # Append/update the relevant global CSV, keeping the latest row for
+            # the same dataset/configuration.
             new_df = pd.DataFrame([base_row])
             if os.path.exists(path):
                 old_df = self.ch.read_dataframe(path, dtype=dtype)
@@ -360,15 +451,69 @@ class SelectorAnalysisService:
             out_df = out_df.drop_duplicates(subset=key_cols, keep="last")
             self.ch.save_dataframe(out_df, path)
 
+        # Save the three comparisons described in the method docstring.
         save_row(path_full, bb_metrics_full)
         save_row(path_accepted, bb_metrics_accepted)
+        save_row(path_matched_coverage, bb_metrics_matched_coverage)
 
-    def plot_selector_vs_bb_dumbbell_per_dataset(self):
+    def _matched_coverage_blackbox_subset(
+        self,
+        df_selector: pd.DataFrame,
+        df_bb: pd.DataFrame,
+        n_non_abstain: int,
+    ) -> pd.DataFrame:
+        model_conf_col = self.ctx.model_conf_col
+
+        # Match the selector evaluation universe exactly. The selector may be
+        # built from inner joins of several files, so use only rows present in
+        # the selector dataframe.
+        selector_indices = df_selector[ind].tolist()
+        df_bb_scope = df_bb[df_bb[ind].isin(selector_indices)].copy()
+        if len(df_bb_scope) != len(df_selector):
+            missing = set(selector_indices) - set(df_bb_scope[ind].tolist())
+            raise ValueError(
+                f"Cannot build matched-coverage blackbox baseline: "
+                f"{len(missing)} selector rows are missing from blackbox predictions."
+            )
+
+        if model_conf_col not in df_bb_scope.columns:
+            raise ValueError(f"Missing blackbox confidence column: {model_conf_col}")
+
+        # Deterministic tie-breaking at the confidence cutoff:
+        # 1. higher blackbox confidence,
+        # 2. smaller original_index,
+        # 3. original file order.
+        df_bb_scope["_matched_coverage_original_order"] = np.arange(len(df_bb_scope))
+        df_bb_scope[model_conf_col] = pd.to_numeric(df_bb_scope[model_conf_col], errors="coerce")
+        df_bb_scope[ind] = pd.to_numeric(df_bb_scope[ind], errors="coerce")
+
+        ranked_df = df_bb_scope.sort_values(
+            by=[model_conf_col, ind, "_matched_coverage_original_order"],
+            ascending=[False, True, True],
+            na_position="last",
+            kind="mergesort",
+        )
+        # Keep exactly as many rows as the selector accepted.
+        return ranked_df.head(n_non_abstain).drop(columns=["_matched_coverage_original_order"])
+
+    def plot_selector_vs_bb_accepted_subset_dumbbell_per_dataset(self):
+        self._plot_selector_vs_bb_dumbbell_per_dataset(
+            report_filename="selector_classification_reports_on_accepted_subset.csv",
+            output_suffix="accepted_subset",
+        )
+
+    def plot_selector_vs_bb_matched_coverage_dumbbell_per_dataset(self):
+        self._plot_selector_vs_bb_dumbbell_per_dataset(
+            report_filename="selector_classification_reports_matched_coverage_bb.csv",
+            output_suffix="matched_coverage",
+        )
+
+    def _plot_selector_vs_bb_dumbbell_per_dataset(self, report_filename: str, output_suffix: str):
         axis_label_fontsize = 16
         tick_fontsize = 14
 
         df = self.ch.read_dataframe(
-            f"{self.dm.selector_path}selector_classification_reports_on_accepted_subset.csv",
+            f"{self.dm.selector_path}{report_filename}",
             dtype=dtype
         )
 
@@ -412,6 +557,6 @@ class SelectorAnalysisService:
         ax.tick_params(axis="y", labelsize=axis_label_fontsize)
         fig.tight_layout()
 
-        out_path = f"{self.dm.selector_path}{self.ctx.dataset_prefix}_selector_vs_bb_dumbbell.png"
+        out_path = f"{self.dm.selector_path}{self.ctx.dataset_prefix}_selector_vs_bb_{output_suffix}_dumbbell.png"
         fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
         plt.close(fig)

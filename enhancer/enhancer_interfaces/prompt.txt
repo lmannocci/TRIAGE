@@ -40,7 +40,6 @@ Output format:
   "prediction_consistency": int,
   "unsupported_claims": int,
   "clarity": int,
-  "overall_score": float,
   "short_reason": "..."
 }
 
@@ -81,6 +80,5 @@ Output format:
   "retrieval_relevance": int,
   "grounding": int,
   "unsupported_claims": int,
-  "overall_score": float,
   "short_reason": "..."
 }

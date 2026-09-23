@@ -10,9 +10,12 @@ level: Dict[str, int] = {
     'explainer': 2,
     'enhancer': 3,
     'evaluator': 4,
+    'bootstrap_confidence_intervals': 4,
+    'explanation_topk_sensitivity': 4,
     'synthesizer': 5,
     'confidence_enhancer': 6,
     'selector': 7,
+    'sensitivity_analysis': 7,
     'enhancer_validator': 8
 }
 
@@ -195,6 +198,18 @@ selector_explanation_color_dict = {"both": pastel_palette[2],
                      "enhancer": pastel_palette[3],
                      "abstain": pastel_palette[4],
                      "unknown": pastel_palette[7]
+}
+
+selector_sensitivity_metric_color_dict = {
+    "selector_f1-score_macro": pastel_palette[2],
+    "selector_f1-score_1": pastel_palette[3],
+    "coverage": pastel_palette[4],
+}
+
+selector_sensitivity_metric_label_dict = {
+    "selector_f1-score_macro": "f1-score macro",
+    "selector_f1-score_1": "f1-score class 1",
+    "coverage": "coverage",
 }
 
 dataset_color_dict = {

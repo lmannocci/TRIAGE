@@ -1,4 +1,5 @@
 import ast
+import glob
 import os
 import numpy as np
 from typing import List, Optional, Tuple
@@ -50,6 +51,7 @@ class EnhancerJudgeValidator:
         top_k: Optional[int] = None,
         cuda_visible_devices: Optional[str] = None,
         parallel: bool = False,
+        rerun_existing: bool = False,
     ):
         self.ch = ch
         self.lm = lm
@@ -93,6 +95,7 @@ class EnhancerJudgeValidator:
         self.top_k = top_k
         self.cuda_visible_devices = cuda_visible_devices
         self.parallel = parallel
+        self.rerun_existing = rerun_existing
 
         self.dataset_path = self.dm.dataset_path
         self.explainer_path = f"{self.dm.explainer_path}{self.explainer_name}_df.csv"
@@ -113,6 +116,9 @@ class EnhancerJudgeValidator:
 
     def _run_judge_variant(self, evaluation_type: str):
         output_file = self._judge_output_file(evaluation_type, "df")
+        if self.rerun_existing:
+            self._clear_judge_variant_outputs(evaluation_type)
+
         validation_df = self._build_validation_dataframe(evaluation_type)
         rows_to_process = self._filter_rows_to_process(validation_df, output_file)
         if len(rows_to_process) == 0:
@@ -181,6 +187,25 @@ class EnhancerJudgeValidator:
             )
 
         raise ValueError(f"Unknown judge enhancer: {self.judge_enhancer_name}")
+
+    def _clear_judge_variant_outputs(self, evaluation_type: str) -> None:
+        out_path = self.output_path_rag if evaluation_type == "retrieved_documents" else self.output_path_explanation
+        patterns = [
+            f"{out_path}{self._judge_file_prefix(evaluation_type)}_*.csv",
+            f"{out_path}{self.validator_name}_gpu*.csv",
+            f"{out_path}{self.validator_name}_gpu*_timing.csv",
+            f"{out_path}{self.validator_name}_timing.csv",
+            f"{out_path}{self.validator_name}_timing_metrics.csv",
+        ]
+
+        removed = 0
+        for pattern in patterns:
+            for path in glob.glob(pattern):
+                if os.path.isfile(path):
+                    os.remove(path)
+                    removed += 1
+
+        self.lm.printl(f"Cleared {removed} existing judge output files for {evaluation_type}.")
 
     def _build_validation_dataframe(self, evaluation_type: str = "explanation") -> pd.DataFrame:
         patient_df = self._load_patient_dataframe()

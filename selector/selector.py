@@ -171,9 +171,17 @@ class Selector:
         self._analysis.analyze_selector()
 
     @log_method
+    def plot_selector_case_scatter(self):
+        self._analysis.plot_selector_case_scatter()
+
+    @log_method
     def save_selector_classification_report(self):
         self._analysis.save_selector_classification_report()
 
     @log_method
-    def plot_selector_vs_bb_dumbbell_per_dataset(self):
-        self._analysis.plot_selector_vs_bb_dumbbell_per_dataset()
+    def plot_selector_vs_bb_accepted_subset_dumbbell_per_dataset(self):
+        self._analysis.plot_selector_vs_bb_accepted_subset_dumbbell_per_dataset()
+
+    @log_method
+    def plot_selector_vs_bb_matched_coverage_dumbbell_per_dataset(self):
+        self._analysis.plot_selector_vs_bb_matched_coverage_dumbbell_per_dataset()

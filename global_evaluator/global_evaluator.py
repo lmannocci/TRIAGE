@@ -23,6 +23,191 @@ class GlobalEvaluator:
         self.lm = lm
         self.dm = DirectoryManager(lm, results_path)
 
+    @log_method
+    def merge_ablation_results(self, comparison_scope: str = "accepted_subset_bb") -> pd.DataFrame:
+        """
+        Merge selector ablation predictive metrics and explanation usage.
+
+        This is a global aggregation: it reads the cross-dataset ablation CSVs
+        produced by SelectorSensitivityAnalysis and saves one compact summary
+        table under global_evaluator/selector/sensitivity_analysis.
+        """
+        classification_path = (
+            f"{self.dm.selector_sensitivity_analysis_path}"
+            "selector_ablation_classification_reports.csv"
+        )
+        usage_path = (
+            f"{self.dm.selector_sensitivity_analysis_path}"
+            "selector_ablation_explanation_usage.csv"
+        )
+        if not os.path.exists(classification_path) or not os.path.exists(usage_path):
+            self.lm.printl("[Warning] Missing ablation CSVs. Run SelectorSensitivityAnalysis.run_ablation_study first.")
+            return pd.DataFrame()
+
+        ablation_df = self.ch.read_dataframe(classification_path, dtype=dtype).copy()
+        usage_df = self.ch.read_dataframe(usage_path, dtype=dtype).copy()
+        ablation_df = ablation_df[ablation_df["comparison_scope"].astype(str).eq(comparison_scope)].copy()
+
+        ablation_df["configuration_pub"] = ablation_df.apply(self._publication_configuration_from_thresholds, axis=1)
+        usage_df["configuration_pub"] = usage_df.apply(self._publication_configuration_from_thresholds, axis=1)
+
+        predictive_df = (
+            ablation_df[
+                [
+                    "dataset_prefix",
+                    "configuration_pub",
+                    "selector_f1-score_macro",
+                    "selector_f1-score_1",
+                    "coverage",
+                ]
+            ]
+            .drop_duplicates(subset=["dataset_prefix", "configuration_pub"])
+            .rename(
+                columns={
+                    "configuration_pub": "configuration",
+                    "selector_f1-score_macro": "selector_f1_macro",
+                    "selector_f1-score_1": "selector_f1_1",
+                }
+            )
+        )
+
+        usage_wide_df = (
+            usage_df[
+                [
+                    "dataset_prefix",
+                    "configuration_pub",
+                    "explanation_case",
+                    "percentage",
+                ]
+            ]
+            .pivot_table(
+                index=["dataset_prefix", "configuration_pub"],
+                columns="explanation_case",
+                values="percentage",
+                aggfunc="first",
+            )
+            .reset_index()
+            .rename(
+                columns={
+                    "configuration_pub": "configuration",
+                    "explainer": "explainer_only_pct",
+                    "enhancer": "enhancer_only_pct",
+                    "both": "both_pct",
+                    "abstain": "abstain_pct",
+                }
+            )
+        )
+
+        summary_df = predictive_df.merge(
+            usage_wide_df,
+            on=["dataset_prefix", "configuration"],
+            how="left",
+        )
+
+        output_columns = [
+            "dataset_prefix",
+            "configuration",
+            "selector_f1_macro",
+            "selector_f1_1",
+            "coverage",
+            "explainer_only_pct",
+            "enhancer_only_pct",
+            "both_pct",
+            "abstain_pct",
+        ]
+        summary_df = summary_df[output_columns]
+        summary_df = self._sort_ablation_summary(summary_df)
+        summary_df = self._round_ablation_summary(summary_df)
+        self._validate_ablation_summary(summary_df)
+
+        out_path = f"{self.dm.selector_sensitivity_analysis_path}selector_ablation_summary.csv"
+        self.ch.save_dataframe(summary_df, out_path)
+        return summary_df
+
+    @staticmethod
+    def _publication_configuration_from_thresholds(row: pd.Series) -> str:
+        model_active = pd.to_numeric(row["th_model_conf"], errors="coerce") > 0
+        enhancer_active = pd.to_numeric(row["th_enhancer_conf"], errors="coerce") > 0
+        exp_active = pd.to_numeric(row["th_rbo"], errors="coerce") > 0
+
+        if model_active and enhancer_active and exp_active:
+            return "Full"
+        if model_active and enhancer_active:
+            return "Model + Enhancer"
+        if model_active and exp_active:
+            return "Model + Explanation"
+        if enhancer_active and exp_active:
+            return "Enhancer + Explanation"
+        if model_active:
+            return "Model only"
+        if enhancer_active:
+            return "Enhancer only"
+        if exp_active:
+            return "Explanation only"
+        return "No reliability signals"
+
+    @staticmethod
+    def _publication_configuration_order() -> list:
+        return [
+            "Full",
+            "Model + Enhancer",
+            "Model + Explanation",
+            "Enhancer + Explanation",
+            "Model only",
+            "Enhancer only",
+            "Explanation only",
+            "No reliability signals",
+        ]
+
+    def _sort_ablation_summary(self, summary_df: pd.DataFrame) -> pd.DataFrame:
+        out_df = summary_df.copy()
+        out_df["configuration"] = pd.Categorical(
+            out_df["configuration"],
+            categories=self._publication_configuration_order(),
+            ordered=True,
+        )
+        out_df["dataset_prefix"] = pd.Categorical(
+            out_df["dataset_prefix"],
+            categories=av_datasets,
+            ordered=True,
+        )
+        out_df = out_df.sort_values(["dataset_prefix", "configuration"]).reset_index(drop=True)
+        out_df["dataset_prefix"] = out_df["dataset_prefix"].astype(str)
+        out_df["configuration"] = out_df["configuration"].astype(str)
+        return out_df
+
+    @staticmethod
+    def _round_ablation_summary(summary_df: pd.DataFrame) -> pd.DataFrame:
+        out_df = summary_df.copy()
+        predictive_columns = ["selector_f1_macro", "selector_f1_1", "coverage"]
+        explanation_columns = ["explainer_only_pct", "enhancer_only_pct", "both_pct", "abstain_pct"]
+        out_df[predictive_columns] = out_df[predictive_columns].apply(pd.to_numeric, errors="coerce").round(3)
+        out_df[explanation_columns] = out_df[explanation_columns].apply(pd.to_numeric, errors="coerce").round(2)
+        return out_df
+
+    def _validate_ablation_summary(self, summary_df: pd.DataFrame) -> None:
+        explanation_columns = ["explainer_only_pct", "enhancer_only_pct", "both_pct", "abstain_pct"]
+        validation_df = summary_df.copy()
+        validation_df["explanation_pct_sum"] = validation_df[explanation_columns].sum(axis=1)
+        invalid_pct = validation_df[~validation_df["explanation_pct_sum"].between(99.9, 100.1)]
+        if not invalid_pct.empty:
+            self.lm.printl(
+                "[Warning] Some ablation explanation percentages do not sum to 100: "
+                f"{invalid_pct[['dataset_prefix', 'configuration', 'explanation_pct_sum']].to_dict('records')}"
+            )
+
+        validation_df["coverage_from_abstention"] = 1 - validation_df["abstain_pct"] / 100
+        validation_df["coverage_difference"] = (
+            pd.to_numeric(validation_df["coverage"], errors="coerce")
+            - validation_df["coverage_from_abstention"]
+        ).abs()
+        invalid_coverage = validation_df[validation_df["coverage_difference"] > 0.02]
+        if not invalid_coverage.empty:
+            self.lm.printl(
+                "[Warning] Coverage and abstention are not consistent in ablation summary: "
+                f"{invalid_coverage[['dataset_prefix', 'configuration', 'coverage', 'abstain_pct', 'coverage_from_abstention']].to_dict('records')}"
+            )
+
     def _plot_judge_metrics_from_path(
         self,
         path: str,
@@ -421,14 +606,12 @@ class GlobalEvaluator:
             "retrieval_relevance",
             "grounding",
             "unsupported_claims",
-            "overall_score",
         ]
 
         metric_label_map = {
             "retrieval_relevance": "retrieval\nrelevance",
             "grounding": "grounding",
             "unsupported_claims": "absent\nunsupported claims",
-            "overall_score": "overall\nscore",
         }
 
         self._plot_judge_metrics_from_path(

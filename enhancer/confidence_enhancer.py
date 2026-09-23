@@ -175,7 +175,8 @@ class ConfidenceEnhancer:
 
         # Compute similarity matrix
         if self.metric_neighbors == 'cosine_similarity':
-            sim_matrix = cosine_similarity(X_test_scaled, X_synth_scaled)
+            sim_matrix = cosine_similarity(
+                X_test_scaled[self.info["x_columns"]], X_synth_scale[self.info["x_columns"]])
 
         neighbors = []
 
@@ -571,16 +572,169 @@ class ConfidenceEnhancer:
         self.__compute_confidence_scores(neighbors_enhanced_df, y_pred_df, enhancer_pred_col)
 
     @log_method
-    def plot_confidence_enhancer_results(self):
-        confidence_df = self.ch.read_dataframe(f"{self.dm.ce_enhancer_path}confidence_scores_{self.aggregation_method}.csv", dtype=dtype)
+    def plot_confidence_distribution(self, threshold: Optional[float] = None):
+        tick_fontsize = 14
+        confidence_df = self.ch.read_dataframe(
+            f"{self.dm.ce_enhancer_path}confidence_scores_{self.aggregation_method}.csv",
+            dtype=dtype,
+        )
+        enhancer_df = self.ch.read_dataframe(
+            f"{self.dm.enhancer_path}{self.enhancer_name}_cleaned_df.csv",
+            dtype=dtype,
+        )
 
-        plt.figure()
-        plt.hist(confidence_df[f"{self.enhancer_name}_conf"].to_numpy(), bins=20)
-        # plt.title("Distribution of confidence scores")
-        # plt.xlabel("Confidence score")
-        # plt.ylabel("Count")
-        plt.tight_layout()
-        plt.savefig(f"{self.dm.ce_enhancer_analysis_path}confidence_scores_{self.aggregation_method}_distribution.png", dpi=dpi)
-        self.lm.printl(f"Saved confidence score distribution plot to {self.dm.ce_enhancer_analysis_path}confidence_scores_{self.aggregation_method}_distribution.png")
+        conf_col = f"{self.enhancer_name}_conf"
+        pred_col = f"{self.enhancer_name}_pred"
+        target_col = self.info["target"]
 
-        plt.close()
+        df = enhancer_df[[ind, target_col, pred_col]].merge(
+            confidence_df[[ind, conf_col]],
+            on=ind,
+            how="inner",
+        )
+
+        df[conf_col] = pd.to_numeric(df[conf_col], errors="coerce")
+        df[pred_col] = pd.to_numeric(df[pred_col], errors="coerce")
+        df[target_col] = pd.to_numeric(df[target_col], errors="coerce")
+
+        df_correct = df[df[pred_col] == df[target_col]]
+        df_incorrect = df[df[pred_col] != df[target_col]]
+
+        # ---------------------------------------------------------
+        # 1. Correct vs Incorrect distribution
+        # ---------------------------------------------------------
+        fig, ax = plt.subplots(figsize=(6, 2.5), dpi=dpi)
+
+        sns.kdeplot(
+            df_correct[conf_col].dropna(),
+            fill=True,
+            label="correct predictions",
+            color=pastel_palette[2],
+            ax=ax,
+        )
+
+        sns.kdeplot(
+            df_incorrect[conf_col].dropna(),
+            fill=True,
+            label="incorrect predictions",
+            color=pastel_palette[3],
+            ax=ax,
+        )
+
+        ax.set_xlabel("")
+        ax.set_ylabel("")
+        ax.set_xlim(0, 1)
+        ax.tick_params(axis="both", labelsize=tick_fontsize)
+
+        breakdown_path = (
+            f"{self.dm.ce_enhancer_analysis_path}"
+            f"confidence_scores_{self.aggregation_method}_breakdown_confidence_distribution.png"
+        )
+        fig.tight_layout()
+        fig.savefig(breakdown_path, dpi=dpi, bbox_inches="tight")
+        plt.close(fig)
+
+        legend_handles = [
+            plt.Line2D([0], [0], color=pastel_palette[2], lw=6, label="correct predictions"),
+            plt.Line2D([0], [0], color=pastel_palette[3], lw=6, label="incorrect predictions"),
+        ]
+        legend_fig = plt.figure(figsize=(5, 0.5), dpi=dpi)
+        legend_ax = legend_fig.add_subplot(111)
+        legend_ax.legend(
+            handles=legend_handles,
+            loc="center",
+            frameon=False,
+            ncol=len(legend_handles),
+            fontsize=14,
+        )
+        legend_ax.axis("off")
+        legend_fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+        legend_path = (
+            f"{self.dm.ce_enhancer_analysis_path}"
+            f"confidence_scores_{self.aggregation_method}_breakdown_confidence_distribution_legend.png"
+        )
+        plt.savefig(legend_path, dpi=dpi, bbox_inches="tight", pad_inches=0)
+        plt.close(legend_fig)
+
+        # ---------------------------------------------------------
+        # 2. Overall confidence distribution
+        # ---------------------------------------------------------
+        fig, ax = plt.subplots(figsize=(6, 2.5), dpi=dpi)
+
+        sns.kdeplot(
+            df[conf_col].dropna(),
+            fill=True,
+            color=pastel_palette[0],
+            ax=ax,
+        )
+
+        ax.set_xlabel("")
+        ax.set_ylabel("")
+        ax.set_xlim(0, 1)
+        ax.tick_params(axis="both", labelsize=tick_fontsize)
+
+        overall_path = f"{self.dm.ce_enhancer_analysis_path}confidence_scores_{self.aggregation_method}_distribution.png"
+        fig.tight_layout()
+        fig.savefig(overall_path, dpi=dpi, bbox_inches="tight")
+        plt.close(fig)
+
+        self.lm.printl(f"Saved confidence score distribution plot to {overall_path}")
+        self.lm.printl(f"Saved confidence breakdown plot to {breakdown_path}")
+
+        if threshold is not None:
+            self.__save_confidence_threshold_analysis(df, df_correct, df_incorrect, conf_col, threshold)
+
+    def __save_confidence_threshold_analysis(
+        self,
+        df: pd.DataFrame,
+        df_correct: pd.DataFrame,
+        df_incorrect: pd.DataFrame,
+        conf_col: str,
+        threshold: float,
+    ) -> None:
+        self.lm.printl(f"[INFO] Enhancer confidence threshold = {threshold}")
+
+        def compute_pct(series):
+            series = series.dropna()
+            if len(series) == 0:
+                return np.nan
+            return 100 * (series > threshold).mean()
+
+        total_pct = compute_pct(df[conf_col])
+        correct_pct = compute_pct(df_correct[conf_col])
+        incorrect_pct = compute_pct(df_incorrect[conf_col])
+
+        path_global = f"{self.dm.global_evaluator_path}enhancer_confidence_threshold_analysis.csv"
+        new_row = {
+            "dataset_prefix": self.dataset_prefix,
+            "enhancer_name": self.enhancer_name,
+            "llm_name": self.llm_name,
+            "rag": self.rag,
+            "retriever_name": self.retriever_name,
+            "corpus_name": self.corpus_name,
+            "aggregation_method": self.aggregation_method,
+            "threshold": threshold,
+            "pct_total": total_pct,
+            "pct_correct": correct_pct,
+            "pct_incorrect": incorrect_pct,
+        }
+
+        key_cols = [
+            "dataset_prefix",
+            "enhancer_name",
+            "llm_name",
+            "rag",
+            "retriever_name",
+            "corpus_name",
+            "aggregation_method",
+            "threshold",
+        ]
+
+        if os.path.exists(path_global):
+            df_global = self.ch.read_dataframe(path_global, dtype=dtype)
+            df_global = pd.concat([df_global, pd.DataFrame([new_row])], ignore_index=True)
+        else:
+            df_global = pd.DataFrame([new_row])
+
+        df_global = df_global.drop_duplicates(subset=key_cols, keep="last")
+        self.ch.save_dataframe(df_global, path_global)

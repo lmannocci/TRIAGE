@@ -18,7 +18,16 @@ from imblearn.under_sampling import RandomUnderSampler
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.metrics import accuracy_score, classification_report, roc_curve, roc_auc_score, make_scorer, f1_score
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    precision_score,
+    recall_score,
+    roc_curve,
+    roc_auc_score,
+    make_scorer,
+    f1_score,
+)
 
 from itertools import product
 from interpret.glassbox import ExplainableBoostingClassifier
@@ -201,18 +210,81 @@ class Blackbox:
 
 
         # Create a custom F1 scorer that focuses on stroke=1
-        f1_class = make_scorer(f1_score, pos_label=1)
+        scoring = {
+            "accuracy": make_scorer(accuracy_score),
+            "precision_macro": make_scorer(precision_score, average="macro", zero_division=0),
+            "recall_macro": make_scorer(recall_score, average="macro", zero_division=0),
+            "f1_macro": make_scorer(f1_score, average="macro", zero_division=0),
+            "precision_0": make_scorer(precision_score, pos_label=0, zero_division=0),
+            "recall_0": make_scorer(recall_score, pos_label=0, zero_division=0),
+            "f1_0": make_scorer(f1_score, pos_label=0, zero_division=0),
+            "precision_1": make_scorer(precision_score, pos_label=1, zero_division=0),
+            "recall_1": make_scorer(recall_score, pos_label=1, zero_division=0),
+            "f1_1": make_scorer(f1_score, pos_label=1, zero_division=0),
+            "roc_auc": "roc_auc",
+        }
 
-        grid_search = GridSearchCV(bb, self.param_grid, cv=3, n_jobs=-1, error_score='raise', scoring=f1_class)
+        grid_search = GridSearchCV(
+            bb,
+            self.param_grid,
+            cv=5,
+            n_jobs=-1,
+            error_score='raise',
+            scoring=scoring,
+            refit="f1_1",
+        )
         grid_search.fit(X_train, y_train)
 
         best_bb = grid_search.best_estimator_
         self.lm.printl(f"Best parameters: {grid_search.best_params_}")
         self.ch.save_txt(str(grid_search.best_params_), self.dm.model_path + f"{self.model_name}_{self.model_prefix}_params.txt")
+        self.__save_cv_validation_metrics(grid_search)
         
         self.ch.save_model(best_bb, self.dm.model_path + f"{self.model_name}_{self.model_prefix}.joblib")
 
         return best_bb
+
+    def __save_cv_validation_metrics(self, grid_search: GridSearchCV) -> None:
+        metric_names = [
+            "accuracy",
+            "precision_macro",
+            "recall_macro",
+            "f1_macro",
+            "precision_0",
+            "recall_0",
+            "f1_0",
+            "precision_1",
+            "recall_1",
+            "f1_1",
+            "roc_auc",
+        ]
+        best_index = grid_search.best_index_
+        row = {
+            "dataset_prefix": self.dataset_prefix,
+            "model_name": self.model_name,
+            "model_prefix": self.model_prefix,
+            "cv": grid_search.cv,
+            "refit_metric": "f1_1",
+            "best_params": str(grid_search.best_params_),
+        }
+
+        for metric in metric_names:
+            row[f"{metric}_mean"] = grid_search.cv_results_.get(f"mean_test_{metric}", [np.nan])[best_index]
+            row[f"{metric}_std"] = grid_search.cv_results_.get(f"std_test_{metric}", [np.nan])[best_index]
+
+        local_path = f"{self.dm.model_path}{self.model_name}_{self.model_prefix}_cv_validation_metrics.csv"
+        self.ch.save_dataframe(pd.DataFrame([row]), local_path)
+
+        global_path = f"{self.dm.global_evaluator_path}blackbox_cv_validation_metrics.csv"
+        if os.path.exists(global_path):
+            global_df = self.ch.read_dataframe(global_path, dtype=dtype)
+            global_df = pd.concat([global_df, pd.DataFrame([row])], ignore_index=True)
+        else:
+            global_df = pd.DataFrame([row])
+
+        key_cols = ["dataset_prefix", "model_name", "model_prefix"]
+        global_df = global_df.drop_duplicates(subset=key_cols, keep="last")
+        self.ch.save_dataframe(global_df, global_path)
 
 
     def __plot_roc_curve(self, y_true: pd.Series, y_proba: np.ndarray, save_path: str) -> None:
@@ -293,6 +365,7 @@ class Blackbox:
     
     @log_method
     def plot_confidence_distribution(self, threshold: Optional[float] = None):
+        tick_fontsize = 14
         df = self.ch.read_dataframe(
             f"{self.dm.model_path}{self.model_name}_predicted.csv",
             dtype=dtype
@@ -311,53 +384,74 @@ class Blackbox:
         # ---------------------------------------------------------
         # 1. Correct vs Incorrect distribution
         # ---------------------------------------------------------
-        plt.figure(figsize=(7, 5))
+        fig, ax = plt.subplots(figsize=(6, 2.5), dpi=dpi)
 
         sns.kdeplot(
             df_correct[conf_col].dropna(),
             fill=True,
             label="correct predictions",
-            color="green"
+            color=pastel_palette[2],
+            ax=ax,
         )
 
         sns.kdeplot(
             df_incorrect[conf_col].dropna(),
             fill=True,
             label="incorrect predictions",
-            color="red"
+            color=pastel_palette[3],
+            ax=ax,
         )
 
-        plt.xlabel(f"confidence")
-        plt.ylabel("density")
-        # plt.title("Confidence Distribution: Correct vs Incorrect")
-        plt.legend(loc="upper left")
-        plt.xlim(0, 1)
+        ax.set_xlabel("")
+        ax.set_ylabel("")
+        ax.set_xlim(0, 1)
+        ax.tick_params(axis="both", labelsize=tick_fontsize)
 
         path_plot = f"{self.dm.model_path}{self.model_name}_breakdown_confidence_distribution.png"
-        plt.savefig(path_plot, dpi=dpi, bbox_inches="tight")
-        plt.show()
-        plt.close()
+        fig.tight_layout()
+        fig.savefig(path_plot, dpi=dpi, bbox_inches="tight")
+        plt.close(fig)
+
+        legend_handles = [
+            plt.Line2D([0], [0], color=pastel_palette[2], lw=6, label="correct predictions"),
+            plt.Line2D([0], [0], color=pastel_palette[3], lw=6, label="incorrect predictions"),
+        ]
+        legend_fig = plt.figure(figsize=(5, 0.5), dpi=dpi)
+        legend_ax = legend_fig.add_subplot(111)
+        legend_ax.legend(
+            handles=legend_handles,
+            loc="center",
+            frameon=False,
+            ncol=len(legend_handles),
+            fontsize=14,
+        )
+        legend_ax.axis("off")
+        legend_fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+        path_legend = f"{self.dm.model_path}{self.model_name}_breakdown_confidence_distribution_legend.png"
+        plt.savefig(path_legend, dpi=dpi, bbox_inches="tight", pad_inches=0)
+        plt.close(legend_fig)
 
         # ---------------------------------------------------------
         # 2. Overall confidence distribution
         # ---------------------------------------------------------
-        plt.figure(figsize=(7, 5))
+        fig, ax = plt.subplots(figsize=(6, 2.5), dpi=dpi)
 
         sns.kdeplot(
             df[conf_col].dropna(),
             fill=True,
-            color="blue"
+            color="blue",
+            ax=ax
         )
 
-        plt.xlabel("confidence")
-        plt.ylabel("density")
-        # plt.title("Overall Confidence Distribution")
-        plt.xlim(0, 1)
+        ax.set_xlabel("confidence")
+        ax.set_ylabel("density")
+        # ax.set_title("Overall Confidence Distribution")
+        ax.set_xlim(0, 1)
+        ax.tick_params(axis="both", labelsize=tick_fontsize)
 
         path_plot_all = f"{self.dm.model_path}{self.model_name}_confidence_distribution.png"
-        plt.savefig(path_plot_all, dpi=dpi, bbox_inches="tight")
-        plt.show()
-        plt.close()
+        fig.savefig(path_plot_all, dpi=dpi, bbox_inches="tight")
+        plt.close(fig)
 
         # ---------------------------------------------------------
         # 3. Threshold analysis (SAVE TO GLOBAL DF)
